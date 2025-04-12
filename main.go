@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tarm/serial"
@@ -40,12 +44,10 @@ func SetDiscreteBit(bitAddr uint, value bool) {
 
 func main() {
 
-	// Конфигурация аналоговых датчиков
-	setAnalogChannel(1, 1000) // 6TL406P01
-	setAnalogChannel(3, 1000) // 6TL602L02
-	setAnalogChannel(4, 1000) // 6TW202F01
-	setAnalogChannel(5, 1000) // 6TL102L02
-	setAnalogChannel(6, 1000) // 6TW602F01
+	err := loadFile("analog.txt")
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
 
 	// Конфигурация дискретных датчиков
 	SetDiscreteBit(137, true)  // 6TC101L01
@@ -71,6 +73,7 @@ func main() {
 	defer s.Close()
 
 	buf := make([]byte, 1) // Читаем по 1 байту
+
 	for {
 		n, err := s.Read(buf)
 		if err != nil {
@@ -79,6 +82,8 @@ func main() {
 		}
 		if n > 0 {
 			receivedByte := buf[0]
+
+			fmt.Println("req:", receivedByte)
 
 			if receivedByte&(1<<7) != 0 { // Проверяем 7-й бит (аналоговые или дискретные)
 				// Обработка аналоговых каналов
@@ -93,11 +98,8 @@ func main() {
 
 			} else {
 				// Обработка дискретных каналов
-				switcher := int(receivedByte>>6) & 0x01 // Бит A6 — коммутатор
-				address := uint(receivedByte & 0x3F)    // A5-A0 — адрес в группе
-
-				fmt.Println("switcher", switcher)
-				fmt.Println("address", address)
+				// switcher := int(receivedByte>>6) & 0x01 // Бит A6 — коммутатор
+				address := uint(receivedByte & 0x3F) // A5-A0 — адрес в группе
 
 				s.Write([]byte{^discreteGroup_KD1[address]}) // Отправка ответа с инверсией
 			}
@@ -106,4 +108,50 @@ func main() {
 		time.Sleep(2 * time.Millisecond)
 
 	}
+}
+
+func stripComment(line string) string {
+	commentMarkers := []string{"#", "//", ";"}
+	for _, marker := range commentMarkers {
+		if idx := strings.Index(line, marker); idx != -1 {
+			line = line[:idx]
+		}
+	}
+	return strings.TrimSpace(line)
+}
+
+func loadFile(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := stripComment(scanner.Text())
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			fmt.Printf("Skipping invalid line %d: %s\n", lineNum, line)
+			continue
+		}
+		address, err1 := strconv.Atoi(parts[0])
+		value, err2 := strconv.Atoi(parts[1])
+		if err1 != nil || err2 != nil {
+			fmt.Printf("Skipping line %d due to parse error: %s\n", lineNum, line)
+			continue
+		}
+		setAnalogChannel(byte(address), uint16(value))
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading file: %w", err)
+	}
+
+	return nil
 }
